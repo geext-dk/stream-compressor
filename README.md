@@ -5,7 +5,9 @@ Parallel implementation of a file compressor/decompressor using gzip.
 .NET 5 is required to run these projects
 
 ## Usage
+```
 dotnet run compress/decompress <INPUT_PATH> <OUTPUT_PATH>
+```
 
 ## Compression
 A file is divided to blocks of a fixed size (1MB), and these blocks are compressed independently. Then these compressed blocks are written to the
