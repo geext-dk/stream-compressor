@@ -17,13 +17,13 @@ namespace StreamCompressor
         /// </summary>
         private const int BlockSize = 1024 * 1024;
 
-        public static readonly ILoggerFactory LoggerFactory = Microsoft.Extensions.Logging.LoggerFactory.Create(
-            builder =>
-            {
-                builder.SetMinimumLevel(LogLevel.Warning)
-                    .AddConsole();
-            });
-        
+        private static ILoggerFactory CreateLoggerFactory(bool verbose) => LoggerFactory.Create(builder =>
+        {
+            builder.SetMinimumLevel(verbose ? LogLevel.Information : LogLevel.Warning)
+                .AddConsole(options => options.FormatterName = CustomConsoleLogger.FormatterName)
+                .AddConsoleFormatter<CustomConsoleLogger, CustomConsoleLoggerOptions>();
+        });
+
         public static int Main(string[] args)
         {
             var options = CliOptions.FromArgs(args);
@@ -32,7 +32,9 @@ namespace StreamCompressor
                 return 1;
             }
 
-            var logger = LoggerFactory.CreateLogger<Program>();
+            var loggerFactory = CreateLoggerFactory(options.Verbose);
+
+            var logger = loggerFactory.CreateLogger<Program>();
 
             FileStream? outputStream = null;
             try
@@ -46,8 +48,8 @@ namespace StreamCompressor
 
                 BaseParallelProcessor processor = options.ProgramAction switch
                 {
-                    ProgramAction.Compress => new ParallelCompressor(BlockSize, NumberOfThreads, LoggerFactory),
-                    ProgramAction.Decompress => new ParallelDecompressor(BlockSize, NumberOfThreads, LoggerFactory),
+                    ProgramAction.Compress => new ParallelCompressor(BlockSize, NumberOfThreads, loggerFactory),
+                    ProgramAction.Decompress => new ParallelDecompressor(BlockSize, NumberOfThreads, loggerFactory),
                     _ => throw new NotImplementedException()
                 };
                 

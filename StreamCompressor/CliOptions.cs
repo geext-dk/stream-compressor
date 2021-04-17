@@ -1,5 +1,8 @@
 ﻿using System;
+using System.Collections.Generic;
 using System.IO;
+using System.Linq;
+using System.Text;
 
 namespace StreamCompressor
 {
@@ -24,12 +27,14 @@ namespace StreamCompressor
         public ProgramAction ProgramAction { get; }
         public string InputFilePath { get; }
         public string OutputFilePath { get; }
+        public bool Verbose { get; }
 
-        private CliOptions(ProgramAction programAction, string inputFilePath, string outputFilePath)
+        private CliOptions(ProgramAction programAction, string inputFilePath, string outputFilePath, bool verbose)
         {
             ProgramAction = programAction;
             InputFilePath = inputFilePath;
             OutputFilePath = outputFilePath;
+            Verbose = verbose;
         }
 
         /// <summary>
@@ -39,14 +44,22 @@ namespace StreamCompressor
         /// <returns></returns>
         public static CliOptions? FromArgs(string[] args)
         {
-            if (args.Length != 3 || !Enum.TryParse(args[0], true, out ProgramAction action))
+            var options = args.Where(a => a.StartsWith("--"))
+                .Select(a => a[2..].ToLower())
+                .Where(a => a != string.Empty)
+                .ToList();
+
+            var positionalArgs = args.Where(a => !a.StartsWith("--"))
+                .ToArray();
+            
+            if (positionalArgs.Length != 3 || !Enum.TryParse(positionalArgs[0], true, out ProgramAction action))
             {
                 PrintUsage();
                 return null;
             }
 
-            var inputFilePath = args[1];
-            var outputFilePath = args[2];
+            var inputFilePath = positionalArgs[1];
+            var outputFilePath = positionalArgs[2];
 
             if (!File.Exists(inputFilePath))
             {
@@ -60,12 +73,15 @@ namespace StreamCompressor
                 return null;
             }
 
-            return new CliOptions(action, inputFilePath, outputFilePath);
+            return new CliOptions(action, inputFilePath, outputFilePath, options.Contains("verbose"));
         }
 
         private static void PrintUsage()
         {
             Console.WriteLine("USAGE: GeeXT.StreamCompressor.exe compress/decompress <INPUT_PATH> <OUTPUT_PATH>");
+            Console.WriteLine();
+            Console.WriteLine("Possible options:");
+            Console.WriteLine("\t--verbose\tPrints additional information during the execution");
         }
     }
 }
