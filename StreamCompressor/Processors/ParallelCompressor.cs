@@ -1,21 +1,19 @@
 ﻿using System;
+using System.Collections.Generic;
 using System.IO;
 using System.IO.Compression;
 using Microsoft.Extensions.Logging;
-using StreamCompressor.ThreadSafety;
 
 namespace StreamCompressor.Processors
 {
     public sealed class ParallelCompressor : BaseParallelProcessor
     {
         public ParallelCompressor(int blockSize, int numberOfThreads, ILoggerFactory? loggerFactory = null)
-            : base(blockSize, numberOfThreads, loggerFactory?.CreateLogger<ParallelCompressor>()) { }
+            : base(blockSize, numberOfThreads, loggerFactory) { }
 
-        protected override int SplitAndEnqueue(Stream inputStream, CustomBlockingCollection<(int, byte[])> queue)
+        protected override IEnumerable<byte[]> SplitStream(Stream inputStream)
         {
             byte[] buf = new byte[BlockSize];
-
-            var numberOfChunks = 0;
 
             var bytesRead = inputStream.Read(buf, 0, BlockSize);
             while (bytesRead > 0)
@@ -24,18 +22,10 @@ namespace StreamCompressor.Processors
 
                 Array.Copy(buf, threadBuf, bytesRead);
 
-                queue.Enqueue((numberOfChunks, threadBuf));
-                Logger?.LogInformation("Enqueued an array of size {BufferSize}", bytesRead);
+                yield return threadBuf;
 
-                numberOfChunks++;
                 bytesRead = inputStream.Read(buf, 0, BlockSize);
             }
-
-            queue.CompleteAdding();
-            Logger?.LogInformation("Completed adding arrays to the queue");
-            Logger?.LogInformation("Total number of chunks compressed: {NumberOfChunks}", numberOfChunks);
-
-            return numberOfChunks;
         }
 
         protected override void PerformAction(Stream inputStream, MemoryStream outputStream)

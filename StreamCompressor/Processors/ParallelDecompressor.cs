@@ -1,8 +1,8 @@
-﻿using System.IO;
+﻿using System.Collections.Generic;
+using System.IO;
 using System.IO.Compression;
 using Microsoft.Extensions.Logging;
 using StreamCompressor.Gzip;
-using StreamCompressor.ThreadSafety;
 
 namespace StreamCompressor.Processors
 {
@@ -11,30 +11,15 @@ namespace StreamCompressor.Processors
         private readonly ILoggerFactory? _loggerFactory;
 
         public ParallelDecompressor(int blockSize, int numberOfThreads, ILoggerFactory? loggerFactory = null)
-            : base(blockSize, numberOfThreads, loggerFactory?.CreateLogger<ParallelDecompressor>())
+            : base(blockSize, numberOfThreads, loggerFactory)
         {
             _loggerFactory = loggerFactory;
         }
 
-        protected override int SplitAndEnqueue(Stream inputStream, CustomBlockingCollection<(int, byte[])> queue)
+        protected override IEnumerable<byte[]> SplitStream(Stream inputStream)
         {
-            using var bufferedStream = new BufferedStreamReader(inputStream, BlockSize, _loggerFactory);
-            var membersReader = new GZipMembersReader(bufferedStream, _loggerFactory);
-
-            var numberOfMembers = 0;
-            foreach (var member in membersReader)
-            {
-                queue.Enqueue((numberOfMembers, member));
-                Logger?.LogInformation("Enqueued a gzip member of size {BufferSize}", member.Length);
-
-                numberOfMembers++;
-            }
-
-            queue.CompleteAdding();
-            Logger?.LogInformation("Completed adding arrays to the queue");
-            Logger?.LogInformation("Total number of members decompressed: {NumberOfMembers}", numberOfMembers);
-
-            return numberOfMembers;
+            var bufferedStream = new BufferedStreamReader(inputStream, BlockSize, _loggerFactory);
+            return new GZipMembersReader(bufferedStream, _loggerFactory);
         }
 
         protected override void PerformAction(Stream inputStream, MemoryStream outputStream)

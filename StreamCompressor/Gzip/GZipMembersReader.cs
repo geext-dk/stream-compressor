@@ -10,7 +10,7 @@ namespace StreamCompressor.Gzip
     /// gzip member is simply a gzip-compressed file. But every gzip-compressed file can also be a concatenation
     /// of multiple gzip-compressed files. The class helps searching these files in a single blob.
     /// </summary>
-    public sealed class GZipMembersReader : IEnumerable<byte[]>
+    public sealed class GZipMembersReader : IEnumerable<byte[]>, IDisposable
     {
         private readonly BufferedStreamReader _bufferedStreamReader;
         private readonly ILogger? _logger;
@@ -71,23 +71,32 @@ namespace StreamCompressor.Gzip
         private byte[]? GetNextGZipMember()
         {
             if (_bufferedStreamReader.IsEof)
-                return null;
+            {
+                _logger?.LogInformation("No more members to read");
+            }
 
             var gZipMemberIndex =
                 GZipFormatHelper.FindHeader(_bufferedStreamReader.Buffer, GZipFormatHelper.GZipHeaderLength);
 
             while (!_bufferedStreamReader.IsEof && gZipMemberIndex == -1)
             {
+                var lengthBefore = _bufferedStreamReader.Buffer.Count;
                 _bufferedStreamReader.ReadAndStoreNextChunk();
 
                 gZipMemberIndex =
-                    GZipFormatHelper.FindHeader(_bufferedStreamReader.Buffer, GZipFormatHelper.GZipHeaderLength);
+                    GZipFormatHelper.FindHeader(_bufferedStreamReader.Buffer,
+                        lengthBefore - GZipFormatHelper.GZipHeaderLength);
             }
 
             if (gZipMemberIndex != -1)
                 return _bufferedStreamReader.CutLeftByIndex(gZipMemberIndex);
 
             return _bufferedStreamReader.Buffer.Count == 0 ? null : _bufferedStreamReader.TakeAll();
+        }
+
+        public void Dispose()
+        {
+            _bufferedStreamReader.Dispose();
         }
     }
 }
