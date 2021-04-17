@@ -20,3 +20,7 @@ A gzip file is itself can be a concatenation of multiple gzip files. Actually th
 
 When decompressing, all these gzip files are searched by their headers (magic numbers and some fixed bytes like algorithm, reserved flags etc)
 and decompressed simultaneously, and then written to the output file in the original order.
+
+NOTE: Looks like the decompression is not actually happening in parallel because it is faster to decompress a gzip than find its header in the
+stream, so by the time next gzip header is found the previous stream will be already decompressed. Maybe it is possible to know the position of
+the headers beforehand but it is not possible to know for an arbitrary gzip archive.
