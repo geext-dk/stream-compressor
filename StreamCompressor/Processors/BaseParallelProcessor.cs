@@ -33,9 +33,10 @@ namespace StreamCompressor.Processors
         /// <param name="outputStream"></param>
         public void Process(Stream inputStream, Stream outputStream)
         {
-            CustomBlockingCollection<Stream> resultStreamsQueue;
+            CustomBlockingCollection<Stream>? resultStreamsQueue = null;
             CustomBlockingCollection<(int, byte[])>? queue = null;
-            List<Thread>? threads = null;
+            List<Thread>? processingThreads = null;
+            Thread? writingToFileThread = null;
             var numberOfChunksEnqueued = 0;
             
             try
@@ -44,7 +45,9 @@ namespace StreamCompressor.Processors
                 resultStreamsQueue = new CustomBlockingCollection<Stream>(_numberOfThreads);
 
                 Logger?.LogInformation("Launching {NumberOfThreads} threads", _numberOfThreads);
-                threads = LaunchThreads(queue, resultStreamsQueue).ToList();
+                processingThreads = LaunchProcessingThreads(queue, resultStreamsQueue).ToList();
+
+                writingToFileThread = LaunchWritingToFileThread(resultStreamsQueue, outputStream);
 
                 Logger?.LogInformation("Starting processing the stream");
 
@@ -54,66 +57,55 @@ namespace StreamCompressor.Processors
                     queue.Enqueue((numberOfChunksEnqueued, threadBuf));
                     Logger?.LogInformation("Enqueued an array number {Number} of length {ArrayLength}",
                         numberOfChunksEnqueued, threadBuf.Length);
-                    
-                    if (numberOfChunksEnqueued % _numberOfThreads == 0)
-                    {
-                        Logger?.LogInformation("Waiting for the threads to process all the enqueued chunks");
-                        lock (_chunksProcessedLock)
-                        {
-                            while (_chunksProcessed < numberOfChunksEnqueued)
-                            {
-                                Monitor.Wait(_chunksProcessedLock);
-                            }
-                        }
-                        
-                        WriteChunks(resultStreamsQueue, outputStream, _numberOfThreads);
-                    }
                 }
             }
             finally
             {
-                if (threads != null)
+                if (processingThreads != null)
                 {
                     queue!.CompleteAdding();
                     Logger?.LogInformation("Completed adding arrays to the queue");
                     
                     Logger?.LogInformation("Joining threads");
-                    JoinThreads(threads);
+                    JoinThreads(processingThreads);
+
+                    if (writingToFileThread != null)
+                    {
+                        resultStreamsQueue!.CompleteAdding();
+                        JoinThreads(new [] {writingToFileThread});
+                    }
+                    
                     Logger?.LogInformation("Threads joined");
                 }
             }
-
-            WriteChunks(resultStreamsQueue, outputStream, numberOfChunksEnqueued % _numberOfThreads);
             
             Logger?.LogInformation("Total number of chunks compressed: {NumberOfChunks}", numberOfChunksEnqueued);
         }
 
-        private static void WriteChunks(CustomBlockingCollection<Stream> resultStreamsQueue, Stream outputStream,
-            int numberOfChunks)
-        {
-            for (var i = 0; i < numberOfChunks; ++i)
-            {
-                if (!resultStreamsQueue.Dequeue(out var stream))
-                    break;
-                stream.CopyTo(outputStream);
-            }
-        }
-
-        private IEnumerable<Thread> LaunchThreads(CustomBlockingCollection<(int, byte[])> queue,
+        private IEnumerable<Thread> LaunchProcessingThreads(CustomBlockingCollection<(int, byte[])> queue,
             CustomBlockingCollection<Stream> resultStreamsQueue)
         {
             for (var i = 0; i < _numberOfThreads; ++i)
             {
-                var thread = new Thread(() => ProcessThreadLoop(queue, resultStreamsQueue));
+                var thread = new Thread(() => ProcessingThreadLoop(queue, resultStreamsQueue));
                 thread.Start();
                 yield return thread;
             }
         }
 
+        private Thread LaunchWritingToFileThread(CustomBlockingCollection<Stream> resultStreamsQueue,
+            Stream outputStream)
+        {
+            var thread = new Thread(() => WriteToFileThreadLoop(resultStreamsQueue, outputStream));
+            thread.Start();
+
+            return thread;
+        }
+
         protected abstract IEnumerable<byte[]> SplitStream(Stream inputStream);
 
         protected abstract void PerformAction(Stream inputStream, MemoryStream outputStream);
-        private void ProcessThreadLoop(CustomBlockingCollection<(int, byte[])> queue,
+        private void ProcessingThreadLoop(CustomBlockingCollection<(int, byte[])> queue,
             CustomBlockingCollection<Stream> resultStreamsQueue)
         {
             while (queue.Dequeue(out var tuple))
@@ -143,6 +135,14 @@ namespace StreamCompressor.Processors
                 }
 
                 Logger?.LogInformation("Enqueued the block number {Number} to the result queue", order);
+            }
+        }
+
+        private void WriteToFileThreadLoop(CustomBlockingCollection<Stream> resultStreamsQueue, Stream outputStream)
+        {
+            while (resultStreamsQueue.Dequeue(out var stream))
+            {
+                stream.CopyTo(outputStream);
             }
         }
 
