@@ -21,7 +21,7 @@ namespace StreamCompressor.Processors
         {
             BlockSize = blockSize;
             _numberOfThreads = numberOfThreads;
-            Logger = loggerFactory?.CreateLogger<BaseParallelProcessor>();
+            Logger = loggerFactory?.CreateLogger(GetType());
         }
 
         /// <summary>
