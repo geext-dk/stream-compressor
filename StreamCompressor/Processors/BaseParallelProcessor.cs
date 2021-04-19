@@ -62,12 +62,8 @@ namespace StreamCompressor.Processors
                             _chunkProcessedEvent.WaitOne();
                         }
                         
-                        for (var i = numberOfChunksEnqueued - _numberOfThreads + 1; i <= numberOfChunksEnqueued; ++i)
-                        {
-                            using var stream = resultDictionary.Take(i);
-
-                            stream.CopyTo(outputStream);
-                        }
+                        WriteChunks(resultDictionary, numberOfChunksEnqueued - _numberOfThreads + 1,
+                            numberOfChunksEnqueued, outputStream);
                     }
                 }
             }
@@ -85,14 +81,21 @@ namespace StreamCompressor.Processors
             }
 
             var chunksLeftToWrite = numberOfChunksEnqueued % _numberOfThreads;
-            for (var i = numberOfChunksEnqueued - chunksLeftToWrite + 1; i <= numberOfChunksEnqueued; ++i)
+            WriteChunks(resultDictionary, numberOfChunksEnqueued - chunksLeftToWrite + 1,
+                numberOfChunksEnqueued, outputStream);
+            
+            Logger?.LogInformation("Total number of chunks compressed: {NumberOfChunks}", numberOfChunksEnqueued);
+        }
+
+        private static void WriteChunks(CustomConcurrentDictionary<int, Stream> resultDictionary, int from, int to,
+            Stream outputStream)
+        {
+            for (var i = from; i <= to; ++i)
             {
                 using var stream = resultDictionary.Take(i);
 
                 stream.CopyTo(outputStream);
             }
-            
-            Logger?.LogInformation("Total number of chunks compressed: {NumberOfChunks}", numberOfChunksEnqueued);
         }
 
         private IEnumerable<Thread> LaunchThreads(CustomBlockingCollection<(int, byte[])> queue,
