@@ -13,8 +13,9 @@ namespace StreamCompressor.Processors
         protected readonly int BlockSize;
         protected readonly ILogger? Logger;
         private readonly int _numberOfThreads;
-        private int _chunksProcessed;
-        private readonly AutoResetEvent _chunkProcessedEvent = new(false);
+        private volatile int _chunksProcessed;
+
+        private readonly object _chunksProcessedLock = new();
 
         protected BaseParallelProcessor(int blockSize, int numberOfThreads, ILoggerFactory? loggerFactory = null)
         {
@@ -32,7 +33,7 @@ namespace StreamCompressor.Processors
         /// <param name="outputStream"></param>
         public void Process(Stream inputStream, Stream outputStream)
         {
-            CustomConcurrentDictionary<int, Stream> resultDictionary;
+            CustomBlockingCollection<Stream> resultStreamsQueue;
             CustomBlockingCollection<(int, byte[])>? queue = null;
             List<Thread>? threads = null;
             var numberOfChunksEnqueued = 0;
@@ -40,10 +41,10 @@ namespace StreamCompressor.Processors
             try
             {
                 queue = new CustomBlockingCollection<(int, byte[])>(_numberOfThreads);
-                resultDictionary = new CustomConcurrentDictionary<int, Stream>();
+                resultStreamsQueue = new CustomBlockingCollection<Stream>(_numberOfThreads);
 
                 Logger?.LogInformation("Launching {NumberOfThreads} threads", _numberOfThreads);
-                threads = LaunchThreads(queue, resultDictionary).ToList();
+                threads = LaunchThreads(queue, resultStreamsQueue).ToList();
 
                 Logger?.LogInformation("Starting processing the stream");
 
@@ -57,13 +58,15 @@ namespace StreamCompressor.Processors
                     if (numberOfChunksEnqueued % _numberOfThreads == 0)
                     {
                         Logger?.LogInformation("Waiting for the threads to process all the enqueued chunks");
-                        while (_chunksProcessed < numberOfChunksEnqueued)
+                        lock (_chunksProcessedLock)
                         {
-                            _chunkProcessedEvent.WaitOne();
+                            while (_chunksProcessed < numberOfChunksEnqueued)
+                            {
+                                Monitor.Wait(_chunksProcessedLock);
+                            }
                         }
                         
-                        WriteChunks(resultDictionary, numberOfChunksEnqueued - _numberOfThreads + 1,
-                            numberOfChunksEnqueued, outputStream);
+                        WriteChunks(resultStreamsQueue, outputStream, _numberOfThreads);
                     }
                 }
             }
@@ -80,30 +83,28 @@ namespace StreamCompressor.Processors
                 }
             }
 
-            var chunksLeftToWrite = numberOfChunksEnqueued % _numberOfThreads;
-            WriteChunks(resultDictionary, numberOfChunksEnqueued - chunksLeftToWrite + 1,
-                numberOfChunksEnqueued, outputStream);
+            WriteChunks(resultStreamsQueue, outputStream, numberOfChunksEnqueued % _numberOfThreads);
             
             Logger?.LogInformation("Total number of chunks compressed: {NumberOfChunks}", numberOfChunksEnqueued);
         }
 
-        private static void WriteChunks(CustomConcurrentDictionary<int, Stream> resultDictionary, int from, int to,
-            Stream outputStream)
+        private static void WriteChunks(CustomBlockingCollection<Stream> resultStreamsQueue, Stream outputStream,
+            int numberOfChunks)
         {
-            for (var i = from; i <= to; ++i)
+            for (var i = 0; i < numberOfChunks; ++i)
             {
-                using var stream = resultDictionary.Take(i);
-
+                if (!resultStreamsQueue.Dequeue(out var stream))
+                    break;
                 stream.CopyTo(outputStream);
             }
         }
 
         private IEnumerable<Thread> LaunchThreads(CustomBlockingCollection<(int, byte[])> queue,
-            CustomConcurrentDictionary<int, Stream> resultDictionary)
+            CustomBlockingCollection<Stream> resultStreamsQueue)
         {
             for (var i = 0; i < _numberOfThreads; ++i)
             {
-                var thread = new Thread(() => ThreadLoop(queue, resultDictionary));
+                var thread = new Thread(() => ProcessThreadLoop(queue, resultStreamsQueue));
                 thread.Start();
                 yield return thread;
             }
@@ -112,9 +113,8 @@ namespace StreamCompressor.Processors
         protected abstract IEnumerable<byte[]> SplitStream(Stream inputStream);
 
         protected abstract void PerformAction(Stream inputStream, MemoryStream outputStream);
-
-        private void ThreadLoop(CustomBlockingCollection<(int, byte[])> queue,
-            CustomConcurrentDictionary<int, Stream> resultDictionary)
+        private void ProcessThreadLoop(CustomBlockingCollection<(int, byte[])> queue,
+            CustomBlockingCollection<Stream> resultStreamsQueue)
         {
             while (queue.Dequeue(out var tuple))
             {
@@ -128,11 +128,21 @@ namespace StreamCompressor.Processors
 
                 compressedMemoryStream.Position = 0;
 
-                Logger.LogInformation("Finished processing the block number {Number}", order);
-                resultDictionary.Add(order, compressedMemoryStream);
-                
-                Interlocked.Increment(ref _chunksProcessed);
-                _chunkProcessedEvent.Set();
+                Logger?.LogInformation("Finished processing the block number {Number}", order);
+
+                // wait for all the previous chunks to be added to the dictionary
+                // this way the chunks will always appear sequentially in the dictionary
+                lock (_chunksProcessedLock)
+                {
+                    while (_chunksProcessed + 1 < order)
+                        Monitor.Wait(_chunksProcessedLock);
+
+                    resultStreamsQueue.Enqueue(compressedMemoryStream);
+                    Interlocked.Increment(ref _chunksProcessed);
+                    Monitor.PulseAll(_chunksProcessedLock);
+                }
+
+                Logger?.LogInformation("Enqueued the block number {Number} to the result queue", order);
             }
         }
 

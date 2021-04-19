@@ -1,5 +1,6 @@
 ﻿using System;
 using System.Collections.Generic;
+using System.Diagnostics.CodeAnalysis;
 using System.Threading;
 
 namespace StreamCompressor.ThreadSafety
@@ -62,7 +63,7 @@ namespace StreamCompressor.ThreadSafety
         /// <returns>
         /// True if next item is taken and assigned successfully. False if the queue is signalled as ended
         /// </returns>
-        public bool Dequeue(out T? nextItem)
+        public bool Dequeue([MaybeNullWhen(false)] out T nextItem)
         {
             var signaledEventIndex = WaitHandle.WaitAny(new WaitHandle[]
             {
