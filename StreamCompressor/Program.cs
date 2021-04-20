@@ -8,29 +8,30 @@ namespace StreamCompressor
     public class Program
     {
         /// <summary>
-        /// Number of threads used in the compressor.
-        /// </summary>
-        private static readonly int NumberOfThreads = Environment.ProcessorCount;
-        
-        /// <summary>
         /// Block size used in the compressor. Specified in bytes.
         /// </summary>
         private const int BlockSize = 1024 * 1024;
 
-        private static ILoggerFactory CreateLoggerFactory(bool verbose) => LoggerFactory.Create(builder =>
+        /// <summary>
+        /// Number of threads used in the compressor.
+        /// </summary>
+        private static readonly int NumberOfThreads = Environment.ProcessorCount;
+
+        private static ILoggerFactory CreateLoggerFactory(bool verbose)
         {
-            builder.SetMinimumLevel(verbose ? LogLevel.Information : LogLevel.Warning)
-                .AddConsole(options => options.FormatterName = CustomConsoleLogger.FormatterName)
-                .AddConsoleFormatter<CustomConsoleLogger, CustomConsoleLoggerOptions>();
-        });
+            return LoggerFactory.Create(builder =>
+            {
+                builder.SetMinimumLevel(verbose ? LogLevel.Information : LogLevel.Warning)
+                    .AddConsole(options => options.FormatterName = CustomConsoleLogger.FormatterName)
+                    .AddConsoleFormatter<CustomConsoleLogger, CustomConsoleLoggerOptions>();
+            });
+        }
 
         public static int Main(string[] args)
         {
             var options = CliOptions.FromArgs(args);
             if (options == null)
-            {
                 return 1;
-            }
 
             var loggerFactory = CreateLoggerFactory(options.Verbose);
 
@@ -41,18 +42,22 @@ namespace StreamCompressor
             {
                 logger.LogInformation("Opening file to read: {InputFilePath}", options.InputFilePath);
                 using var inputStream = File.OpenRead(options.InputFilePath);
-                
+
                 logger.LogInformation("Opening file to write: {OutputFilePath}", options.OutputFilePath);
                 outputStream = File.Open(options.OutputFilePath, FileMode.CreateNew, FileAccess.Write,
                     FileShare.None);
 
                 BaseParallelProcessor processor = options.ProgramAction switch
                 {
-                    ProgramAction.Compress => new CustomFormatParallelCompressor(BlockSize, NumberOfThreads, loggerFactory),
-                    ProgramAction.Decompress => new CustomFormatParallelDecompressor(BlockSize, NumberOfThreads, loggerFactory),
+                    ProgramAction.Compress => options.UseStandardFormat
+                        ? new ParallelCompressor(BlockSize, NumberOfThreads, loggerFactory)
+                        : new CustomFormatParallelCompressor(BlockSize, NumberOfThreads, loggerFactory),
+                    ProgramAction.Decompress => options.UseStandardFormat
+                        ? new ParallelDecompressor(BlockSize, NumberOfThreads, loggerFactory)
+                        : new CustomFormatParallelDecompressor(BlockSize, NumberOfThreads, loggerFactory),
                     _ => throw new NotImplementedException()
                 };
-                
+
                 logger.LogInformation("Executing action: {ProgramAction}. Used processor: {Processor}",
                     options.ProgramAction, processor.GetType().Name);
 
@@ -68,6 +73,7 @@ namespace StreamCompressor
                     outputStream.Dispose();
                     File.Delete(options.OutputFilePath);
                 }
+
                 return 1;
             }
         }

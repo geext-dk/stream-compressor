@@ -28,13 +28,16 @@ namespace StreamCompressor
         public string InputFilePath { get; }
         public string OutputFilePath { get; }
         public bool Verbose { get; }
+        public bool UseStandardFormat { get; }
 
-        private CliOptions(ProgramAction programAction, string inputFilePath, string outputFilePath, bool verbose)
+        private CliOptions(ProgramAction programAction, string inputFilePath, string outputFilePath, bool verbose,
+            bool useStandardFormat)
         {
             ProgramAction = programAction;
             InputFilePath = inputFilePath;
             OutputFilePath = outputFilePath;
             Verbose = verbose;
+            UseStandardFormat = useStandardFormat;
         }
 
         /// <summary>
@@ -73,7 +76,9 @@ namespace StreamCompressor
                 return null;
             }
 
-            return new CliOptions(action, inputFilePath, outputFilePath, options.Contains("verbose"));
+            return new CliOptions(action, inputFilePath, outputFilePath,
+                options.Contains("verbose"),
+                options.Contains("standard"));
         }
 
         private static void PrintUsage()
@@ -82,6 +87,7 @@ namespace StreamCompressor
             Console.WriteLine();
             Console.WriteLine("Possible options:");
             Console.WriteLine("\t--verbose\tPrints additional information during the execution");
+            Console.WriteLine("\t--standard\tUse standard gzip format for compression and decompression");
         }
     }
 }
