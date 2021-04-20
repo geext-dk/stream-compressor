@@ -6,7 +6,7 @@ using Microsoft.Extensions.Logging;
 
 namespace StreamCompressor.Processors
 {
-    public sealed class ParallelCompressor : BaseParallelProcessor
+    public class ParallelCompressor : BaseParallelProcessor
     {
         public ParallelCompressor(int blockSize, int numberOfThreads, ILoggerFactory? loggerFactory = null)
             : base(blockSize, numberOfThreads, loggerFactory) { }

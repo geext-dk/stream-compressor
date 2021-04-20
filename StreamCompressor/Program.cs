@@ -48,8 +48,8 @@ namespace StreamCompressor
 
                 BaseParallelProcessor processor = options.ProgramAction switch
                 {
-                    ProgramAction.Compress => new ParallelCompressor(BlockSize, NumberOfThreads, loggerFactory),
-                    ProgramAction.Decompress => new ParallelDecompressor(BlockSize, NumberOfThreads, loggerFactory),
+                    ProgramAction.Compress => new CustomFormatParallelCompressor(BlockSize, NumberOfThreads, loggerFactory),
+                    ProgramAction.Decompress => new CustomFormatParallelDecompressor(BlockSize, NumberOfThreads, loggerFactory),
                     _ => throw new NotImplementedException()
                 };
                 
