@@ -14,13 +14,13 @@ namespace StreamCompressor.ThreadSafety
     public sealed class CustomBlockingCollection<T> : IDisposable
     {
         private readonly object _addLock = new();
+        private readonly Semaphore _itemsAddedSemaphore;
+        private readonly AutoResetEvent _itemTakenEvent;
+        private readonly int _maximumSize;
 
         private readonly Queue<T> _queue;
         private readonly ManualResetEvent _queueEndEvent;
-        private readonly Semaphore _itemsAddedSemaphore;
-        private readonly AutoResetEvent _itemTakenEvent;
         private int _currentCount;
-        private readonly int _maximumSize;
 
         /// <summary>
         /// Create a blocking collection with the specified maximum size
@@ -36,20 +36,28 @@ namespace StreamCompressor.ThreadSafety
             _itemTakenEvent = new AutoResetEvent(false);
         }
 
+        public void Dispose()
+        {
+            _queueEndEvent.Dispose();
+            _itemsAddedSemaphore.Dispose();
+            _itemTakenEvent.Dispose();
+        }
+
         /// <summary>
         /// Add an element to the collection. Blocks if the collection already contains the maximum number of elements.
         /// </summary>
         /// <param name="item"></param>
-        public void Enqueue(T item)
+        public bool Enqueue(T item)
         {
             lock (_addLock)
             {
-                if (IsCompleted())
-                    throw new InvalidOperationException("Cannot enqueue items after the queue has ended.");
-                
-                WaitForFreeSpace();
+                if (WaitForFreeSpace())
+                {
+                    EnqueueItem(item);
+                    return true;
+                }
 
-                EnqueueItem(item);
+                return false;
             }
         }
 
@@ -91,11 +99,6 @@ namespace StreamCompressor.ThreadSafety
             _queueEndEvent.Set();
         }
 
-        private bool IsCompleted()
-        {
-            return _queueEndEvent.WaitOne(0);
-        }
-
         private void EnqueueItem(T item)
         {
             lock (_queue)
@@ -122,17 +125,21 @@ namespace StreamCompressor.ThreadSafety
             }
         }
 
-        private void WaitForFreeSpace()
+        private bool WaitForFreeSpace()
         {
             while (_currentCount >= _maximumSize)
-                _itemTakenEvent.WaitOne();
-        }
+            {
+                var index = WaitHandle.WaitAny(new WaitHandle[]
+                {
+                    _itemTakenEvent,
+                    _queueEndEvent
+                });
 
-        public void Dispose()
-        {
-            _queueEndEvent.Dispose();
-            _itemsAddedSemaphore.Dispose();
-            _itemTakenEvent.Dispose();
+                if (index == 1)
+                    return false;
+            }
+
+            return true;
         }
     }
 }

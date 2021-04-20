@@ -1,6 +1,6 @@
-﻿using System.Collections.Generic;
+﻿using System;
+using System.Collections.Generic;
 using System.IO;
-using System.Linq;
 using System.Threading;
 using Microsoft.Extensions.Logging;
 using StreamCompressor.ThreadSafety;
@@ -14,6 +14,7 @@ namespace StreamCompressor.Processors
         protected readonly int BlockSize;
         private readonly ILogger? _logger;
         private volatile int _chunksProcessed;
+        private Exception? _threadException;
 
         protected BaseParallelProcessor(int blockSize, int numberOfThreads, ILoggerFactory? loggerFactory = null)
         {
@@ -33,7 +34,7 @@ namespace StreamCompressor.Processors
         {
             CustomBlockingCollection<(int, byte[])>? queue = null;
             CustomBlockingCollection<(byte[], int)>? resultByteArrays = null;
-            List<Thread>? processingThreads = null;
+            Thread[]? processingThreads = null;
             Thread? writingToFileThread = null;
             var numberOfChunksEnqueued = 0;
 
@@ -43,18 +44,24 @@ namespace StreamCompressor.Processors
                 resultByteArrays = new CustomBlockingCollection<(byte[], int)>(_numberOfThreads);
 
                 _logger?.LogInformation("Launching {NumberOfThreads} threads", _numberOfThreads);
-                processingThreads = LaunchProcessingThreads(queue, resultByteArrays).ToList();
-
-                writingToFileThread = LaunchWritingToFileThread(resultByteArrays, outputStream);
+                (processingThreads, writingToFileThread) =
+                    LaunchProcessingThreads(queue, resultByteArrays, outputStream);
 
                 _logger?.LogInformation("Starting processing the stream");
 
                 foreach (var threadBuf in SplitStream(inputStream))
                 {
                     numberOfChunksEnqueued += 1;
-                    queue.Enqueue((numberOfChunksEnqueued, threadBuf));
-                    _logger?.LogInformation("Enqueued an array number {Number} of length {ArrayLength}",
-                        numberOfChunksEnqueued, threadBuf.Length);
+                    if (queue.Enqueue((numberOfChunksEnqueued, threadBuf)))
+                    {
+                        _logger?.LogInformation("Enqueued an array number {Number} of length {ArrayLength}",
+                            numberOfChunksEnqueued, threadBuf.Length);
+                    }
+                    else
+                    {
+                        _logger?.LogInformation("The queue was closed due to an exception. Exiting");
+                        throw new InvalidOperationException("One of the threads threw an exception.", _threadException);
+                    }
                 }
             }
             finally
@@ -83,24 +90,28 @@ namespace StreamCompressor.Processors
             _logger?.LogInformation("Total number of chunks compressed: {NumberOfChunks}", numberOfChunksEnqueued);
         }
 
-        private IEnumerable<Thread> LaunchProcessingThreads(CustomBlockingCollection<(int, byte[])> queue,
-            CustomBlockingCollection<(byte[], int)> resultByteArrays)
+        private (Thread[], Thread) LaunchProcessingThreads(CustomBlockingCollection<(int, byte[])> queue,
+            CustomBlockingCollection<(byte[], int)> resultByteArrays, Stream outputStream)
         {
+            void HandleException(Exception ex)
+            {
+                _threadException = ex;
+                queue.CompleteAdding();
+                resultByteArrays.CompleteAdding();
+            }
+
+            var processingThreads = new Thread[_numberOfThreads];
             for (var i = 0; i < _numberOfThreads; ++i)
             {
-                var thread = new Thread(() => ProcessingThreadLoop(queue, resultByteArrays));
-                thread.Start();
-                yield return thread;
+                processingThreads[i] = new Thread(() => ProcessingThreadLoop(queue, resultByteArrays, HandleException));
+                processingThreads[i].Start();
             }
-        }
 
-        private Thread LaunchWritingToFileThread(CustomBlockingCollection<(byte[], int)> resultByteArrays,
-            Stream outputStream)
-        {
-            var thread = new Thread(() => WriteToFileThreadLoop(resultByteArrays, outputStream));
-            thread.Start();
+            var writingThread = new Thread(
+                () => WriteToFileThreadLoop(resultByteArrays, outputStream, HandleException));
+            writingThread.Start();
 
-            return thread;
+            return (processingThreads, writingThread);
         }
 
         protected abstract IEnumerable<byte[]> SplitStream(Stream inputStream);
@@ -108,43 +119,62 @@ namespace StreamCompressor.Processors
         protected abstract void PerformAction(Stream inputStream, MemoryStream outputStream);
 
         private void ProcessingThreadLoop(CustomBlockingCollection<(int, byte[])> queue,
-            CustomBlockingCollection<(byte[], int)> resultByteArrays)
+            CustomBlockingCollection<(byte[], int)> resultByteArrays,
+            Action<Exception> onException)
         {
-            while (queue.Dequeue(out var tuple))
+            try
             {
-                var (order, arrayToProcess) = tuple;
-                _logger.LogInformation("Starting processing the block number {Number}", order);
-
-                using var originalMemoryStream = new MemoryStream(arrayToProcess);
-                using var compressedMemoryStream = new MemoryStream();
-
-                PerformAction(originalMemoryStream, compressedMemoryStream);
-
-                _logger?.LogInformation("Finished processing the block number {Number}", order);
-
-                // wait for all the previous chunks to be added to the dictionary
-                // this way the chunks will always appear sequentially in the dictionary
-                lock (_chunksProcessedLock)
+                while (queue.Dequeue(out var tuple))
                 {
-                    while (_chunksProcessed + 1 < order)
-                        Monitor.Wait(_chunksProcessedLock);
+                    var (order, arrayToProcess) = tuple;
+                    _logger.LogInformation("Starting processing the block number {Number}", order);
 
-                    resultByteArrays.Enqueue((compressedMemoryStream.GetBuffer(), (int) compressedMemoryStream.Length));
-                    Interlocked.Increment(ref _chunksProcessed);
-                    Monitor.PulseAll(_chunksProcessedLock);
+                    using var originalMemoryStream = new MemoryStream(arrayToProcess);
+                    using var compressedMemoryStream = new MemoryStream();
+
+                    PerformAction(originalMemoryStream, compressedMemoryStream);
+
+                    _logger?.LogInformation("Finished processing the block number {Number}", order);
+
+                    // wait for all the previous chunks to be added to the dictionary
+                    // this way the chunks will always appear sequentially in the dictionary
+                    lock (_chunksProcessedLock)
+                    {
+                        while (_chunksProcessed + 1 < order)
+                            Monitor.Wait(_chunksProcessedLock);
+
+                        var newItem = (compressedMemoryStream.GetBuffer(), (int) compressedMemoryStream.Length);
+                        if (!resultByteArrays.Enqueue(newItem))
+                            return;
+                        
+                        Interlocked.Increment(ref _chunksProcessed);
+                        Monitor.PulseAll(_chunksProcessedLock);
+                    }
+
+                    _logger?.LogInformation("Enqueued the block number {Number} to the result queue", order);
                 }
-
-                _logger?.LogInformation("Enqueued the block number {Number} to the result queue", order);
+            }
+            catch (Exception ex)
+            {
+                onException(ex);
             }
         }
 
         protected virtual void WriteToFileThreadLoop(CustomBlockingCollection<(byte[], int)> resultByteArrays,
-            Stream outputStream)
+            Stream outputStream, Action<Exception> onException)
         {
-            while (resultByteArrays.Dequeue(out var byteArrayAndLength))
+            try
             {
-                var (byteArray, length) = byteArrayAndLength;
-                outputStream.Write(byteArray, 0, length);
+
+                while (resultByteArrays.Dequeue(out var byteArrayAndLength))
+                {
+                    var (byteArray, length) = byteArrayAndLength;
+                    outputStream.Write(byteArray, 0, length);
+                }
+            }
+            catch (Exception ex)
+            {
+                onException(ex);
             }
         }
 

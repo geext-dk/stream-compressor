@@ -1,4 +1,5 @@
-﻿using System.Collections.Generic;
+﻿using System;
+using System.Collections.Generic;
 using System.IO;
 using Microsoft.Extensions.Logging;
 using StreamCompressor.ThreadSafety;
@@ -11,20 +12,28 @@ namespace StreamCompressor.Processors
             : base(blockSize, numberOfThreads, loggerFactory) { }
 
         protected override void WriteToFileThreadLoop(CustomBlockingCollection<(byte[], int)> resultByteArrays,
-            Stream outputStream)
+            Stream outputStream, Action<Exception> onException)
         {
-            outputStream.Seek((long) CustomArchiveFormatHelpers.ArchiveHeaderSize, SeekOrigin.Begin);
-            var blockSizes = new List<uint>();
-            while (resultByteArrays.Dequeue(out var byteArrayAndLength))
+            try
             {
-                var (byteArray, length) = byteArrayAndLength;
-                outputStream.Write(byteArray, 0, length);
-                blockSizes.Add((uint) length);
+
+                outputStream.Seek((long) CustomArchiveFormatHelpers.ArchiveHeaderSize, SeekOrigin.Begin);
+                var blockSizes = new List<uint>();
+                while (resultByteArrays.Dequeue(out var byteArrayAndLength))
+                {
+                    var (byteArray, length) = byteArrayAndLength;
+                    outputStream.Write(byteArray, 0, length);
+                    blockSizes.Add((uint) length);
+                }
+
+                outputStream.Seek(0, SeekOrigin.Begin);
+
+                CustomArchiveFormatHelpers.WriteHeader(outputStream, blockSizes);
             }
-
-            outputStream.Seek(0, SeekOrigin.Begin);
-
-            CustomArchiveFormatHelpers.WriteHeader(outputStream, blockSizes);
+            catch (Exception ex)
+            {
+                onException(ex);
+            }
         }
     }
 }
